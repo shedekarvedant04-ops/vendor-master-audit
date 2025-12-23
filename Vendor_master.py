@@ -417,12 +417,9 @@ def apply_rules(df, field_map):
         )
     if "Contact" in df.columns:
         df["Missing_Contact"] = df["Contact"].apply(is_missing_contact)
-        df["Invalid_Contact"] = df["Contact"].apply(is_invalid_contact)
-
-        exception_cols.extend([
-            "Missing_Contact",
-            "Invalid_Contact"
-        ])
+        exception_cols.append("Missing_Contact") 
+        df["Invalid_Contact"] = df["Contact"].apply(is_invalid_contact) ==False
+        exception_cols.append("Invalid_Contact")
 
     if "Email" in norm:
         df["Invalid_Email"] = df["Email"].apply(is_invalid_email)
