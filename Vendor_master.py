@@ -460,11 +460,11 @@ if uploaded_file:
 
     if remove_idx is not None:
         st.session_state.mappings.pop(remove_idx)
-        st.experimental_rerun()
+        st.rerun()
 
     if st.button("➕ Add Mapping"):
         st.session_state.mappings.append({"label": "", "column": None})
-        st.experimental_rerun()
+        st.rerun()
 
     # --------------------------------------------------------
     # RUN AUDIT
