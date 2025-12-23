@@ -284,6 +284,47 @@ def extract_pan_from_gst(gst):
     except:
         return None
 
+def is_missing_contact(contact):
+    if pd.isna(contact):
+        return True
+
+    contact = str(contact).strip()
+    return contact == ""
+
+def is_invalid_contact(contact):
+    if pd.isna(contact):
+        return False  # handled separately
+
+    contact = str(contact).strip()
+
+    if contact == "":
+        return False  # handled separately
+
+    contact = re.sub(r"[^\d]", "", contact)
+
+    if len(contact) < 10 or len(contact) > 15:
+        return True
+
+    if len(set(contact)) == 1:
+        return True
+
+    return False
+
+def is_missing_email(email):
+    if pd.isna(email):
+        return True
+    return str(email).strip() == ""
+
+def is_invalid_email(email):
+    if pd.isna(email):
+        return True
+
+    email = str(email).strip().lower()
+
+    pattern = r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
+
+    return not bool(re.match(pattern, email))
+
 def validate_pan(pan):
     """PAN format validation"""
     if pd.isna(pan) or str(pan).strip() == "":
@@ -374,6 +415,20 @@ def apply_rules(df, field_map):
         df["Inactive_But_Configured"] = (
             df[norm["Status"]].astype(str).str.lower().str.contains("inactive")
         )
+    if "Contact" in df.columns:
+        df["Missing_Contact"] = df["Contact"].apply(is_missing_contact)
+        df["Invalid_Contact"] = df["Contact"].apply(is_invalid_contact)
+
+        exception_cols.extend([
+            "Missing_Contact",
+            "Invalid_Contact"
+        ])
+
+    if "Email" in norm:
+        df["Invalid_Email"] = df["Email"].apply(is_invalid_email)
+        exception_cols.append("Invalid_Email")
+        df["Missing_Email"] = df["Email"].apply(is_missing_email)
+        exception_cols.append("Missing_Email")
 
     return df
     
@@ -395,6 +450,18 @@ def classify_severity(row):
         if col.startswith("Missing_") and row[col]:
             if "PAN" in col or "GST" in col:
                 return "High"
+            if "CONTACTS" in col:
+                return "High"
+            if "Email" in col:
+                return "Medium"
+            return "Medium"
+        if col.startswith("Invalid_") and row[col]:
+            if "PAN" in col or "GST" in col:
+                return "Medium"
+            if "CONTACTS" in col:
+                return "Medium"
+            if "Email" in col:
+                return "Low"
             return "Medium"
 
     return "No Issue"
