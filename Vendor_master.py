@@ -460,10 +460,12 @@ if uploaded_file:
 
     if remove_idx is not None:
         st.session_state.mappings.pop(remove_idx)
+        st.session_state["_refresh"] = True
         st.rerun()
 
     if st.button("➕ Add Mapping"):
         st.session_state.mappings.append({"label": "", "column": None})
+        st.session_state["_refresh"] = True
         st.rerun()
 
     # --------------------------------------------------------
