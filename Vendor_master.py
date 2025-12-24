@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from datetime import datetime
 import matplotlib.pyplot as plt
 from io import BytesIO
+from itertools import permutations
 
 # ------------------------------------------------------------
 # PAGE SETUP
@@ -276,6 +277,34 @@ def log_exception_request(user_text, threshold=0.70):
 
     req_df.to_csv(REQUEST_DB, index=False)
 
+def generate_cross_exceptions(df, field_map):
+    """
+    Creates cross-field inconsistency exceptions:
+    Same X → Different Y for all field combinations
+    """
+    norm = normalize_labels(field_map)
+    fields = list(norm.keys())
+
+    for base, compare in permutations(fields, 2):
+        base_col = norm[base]
+        compare_col = norm[compare]
+
+        # Safety checks
+        if base_col not in df.columns or compare_col not in df.columns:
+            continue
+
+        col_name = f"Same_{base.upper()}_Different_{compare.upper()}"
+
+        df[col_name] = (
+            df.groupby(base_col)[compare_col]
+              .transform("nunique")
+              .gt(1)
+            & df[base_col].notna()
+            & (df[base_col].astype(str).str.strip() != "")
+        )
+
+    return df
+
 def extract_pan_from_gst(gst):
     """Extract PAN portion from GSTIN"""
     try:
@@ -291,16 +320,21 @@ def is_missing_contact(contact):
     contact = str(contact).strip()
     return contact == ""
 
-def is_invalid_contact(val):
-    if pd.isna(val) or str(val).strip() == "":
-        return False  # handled by Missing_Contact
+def is_invalid_contact(contact):
+    if pd.isna(contact):
+        return False  # handled separately
 
-    digits = re.sub(r"\D", "", str(val))
+    contact = str(contact).strip()
 
-    if len(digits) < 10 or len(digits) > 15:
+    if contact == "":
+        return False  # handled separately
+
+    contact = re.sub(r"[^\d]", "", contact)
+
+    if len(contact) < 10 or len(contact) > 15:
         return True
 
-    if len(set(digits)) == 1:  # 9999999999, 0000000000
+    if len(set(contact)) == 1:
         return True
 
     return False
@@ -311,11 +345,14 @@ def is_missing_email(email):
     return str(email).strip() == ""
 
 def is_invalid_email(email):
-    if is_missing_email(email):
-        return False
-    pattern = r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
-    return not bool(re.match(pattern, str(email).lower()))
+    if pd.isna(email):
+        return True
 
+    email = str(email).strip().lower()
+
+    pattern = r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
+
+    return not bool(re.match(pattern, email))
 
 def validate_pan(pan):
     """PAN format validation"""
@@ -405,22 +442,17 @@ def apply_rules(df, field_map):
     # -------- BEHAVIORAL / RISK --------
     if "status" in norm:
         df["Inactive_But_Configured"] = (
-            df[norm["status"]].astype(str).str.lower().str.contains("inactive")
+            df[norm["Status"]].astype(str).str.lower().str.contains("inactive")
         )
     if "contact" in norm:
-        contact_col = norm["contact"]
+        df["Missing_Contact"] = df["contact"].apply(is_missing_contact)
+        df["Invalid_Contact"] = df["contact"].apply(is_invalid_contact)
 
-        if contact_col in df.columns:
-            df["Missing_Contact"] = df[contact_col].apply(is_missing_contact)
-            df["Invalid_Contact"] = df[contact_col].apply(is_invalid_contact)
     if "email" in norm:
-        email_col = norm["email"]
-        
-        if email_col in df.columns:
-            df["Missing_Email"] = df[email_col].apply(is_missing_email)
-            df["Invalid_Email"] = df[email_col].apply(is_invalid_email)
+        df["Invalid_Email"] = df["email"].apply(is_invalid_email)
+        df["Missing_Email"] = df["email"].apply(is_missing_email)
 
-
+    df = generate_cross_exceptions(df, field_map)
     return df
     
 
@@ -449,7 +481,7 @@ def classify_severity(row):
         if col.startswith("Invalid_") and row[col]:
             if "PAN" in col or "GST" in col:
                 return "Medium"
-            if "CONTACTS" in col:
+            if "Contact" in col:
                 return "Medium"
             if "Email" in col:
                 return "Low"
@@ -486,10 +518,10 @@ if uploaded_file:
     # --------------------------------------------------------
     if "mappings" not in st.session_state:
         st.session_state.mappings = [
-            {"label": "ID", "column": None},
-            {"label": "Name", "column": None},
-            {"label": "PAN", "column": None},
-            {"label": "GST", "column": None},
+            {"label": "", "column": None},
+            {"label": "", "column": None},
+            {"label": "", "column": None},
+            {"label": "", "column": None},
         ]
 
     st.subheader("🛠️ Column Mapping")
@@ -544,7 +576,6 @@ if uploaded_file:
         st.session_state.audit_df = audit_df
         st.session_state.exception_cols = [
             c for c in audit_df.columns if audit_df[c].dtype == bool
-            if c.startswith(("Missing_", "Invalid_", "Duplicate_"))
         ]
 
     # --------------------------------------------------------
