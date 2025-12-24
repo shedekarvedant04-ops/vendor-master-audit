@@ -427,17 +427,6 @@ def apply_rules(df, field_map):
             != df[norm["gst"]].apply(extract_pan_from_gst)
         ) & df[norm["pan"]].notna() & df[norm["gst"]].notna()
 
-    # One PAN → Multiple Vendor IDs
-    if "pan" in norm and "id" in norm:
-        df["Same_PAN_Multiple_IDs"] = (
-            df.groupby(norm["pan"])[norm["id"]].transform("nunique") > 1
-        ) & df[norm["pan"]].notna()
-
-    # One GST → Multiple Vendor IDs
-    if "gst" in norm and "id" in norm:
-        df["Same_GST_Multiple_IDs"] = (
-            df.groupby(norm["gst"])[norm["id"]].transform("nunique") > 1
-        ) & df[norm["gst"]].notna()
     
     # -------- BEHAVIORAL / RISK --------
     if "status" in norm:
