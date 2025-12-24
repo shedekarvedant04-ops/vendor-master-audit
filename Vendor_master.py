@@ -291,21 +291,16 @@ def is_missing_contact(contact):
     contact = str(contact).strip()
     return contact == ""
 
-def is_invalid_contact(contact):
-    if pd.isna(contact):
-        return False  # handled separately
+def is_invalid_contact(val):
+    if pd.isna(val) or str(val).strip() == "":
+        return False  # handled by Missing_Contact
 
-    contact = str(contact).strip()
+    digits = re.sub(r"\D", "", str(val))
 
-    if contact == "":
-        return False  # handled separately
-
-    contact = re.sub(r"[^\d]", "", contact)
-
-    if len(contact) < 10 or len(contact) > 15:
+    if len(digits) < 10 or len(digits) > 15:
         return True
 
-    if len(set(contact)) == 1:
+    if len(set(digits)) == 1:  # 9999999999, 0000000000
         return True
 
     return False
@@ -316,14 +311,11 @@ def is_missing_email(email):
     return str(email).strip() == ""
 
 def is_invalid_email(email):
-    if pd.isna(email):
-        return True
-
-    email = str(email).strip().lower()
-
+    if is_missing_email(email):
+        return False
     pattern = r"^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
+    return not bool(re.match(pattern, str(email).lower()))
 
-    return not bool(re.match(pattern, email))
 
 def validate_pan(pan):
     """PAN format validation"""
@@ -411,17 +403,22 @@ def apply_rules(df, field_map):
         ) & df[norm["gst"]].notna()
     
     # -------- BEHAVIORAL / RISK --------
-    if "Status" in norm:
+    if "status" in norm:
         df["Inactive_But_Configured"] = (
-            df[norm["Status"]].astype(str).str.lower().str.contains("inactive")
+            df[norm["status"]].astype(str).str.lower().str.contains("inactive")
         )
-    if "Contact" in df.columns:
-        df["Missing_Contact"] = df["Contact"].apply(is_missing_contact)
-        df["Invalid_Contact"] = df["Contact"].apply(is_invalid_contact) ==False
+    if "contact" in norm:
+        contact_col = norm["contact"]
 
-    if "Email" in norm:
-        df["Invalid_Email"] = df["Email"].apply(is_invalid_email) == False
-        df["Missing_Email"] = df["Email"].apply(is_missing_email)
+        if contact_col in df.columns:
+            df["Missing_Contact"] = df[contact_col].apply(is_missing_contact)
+            df["Invalid_Contact"] = df[contact_col].apply(is_invalid_contact)
+    if "email" in norm:
+        email_col = norm["email"]
+        
+        if email_col in df.columns:
+            df["Missing_Email"] = df[email_col].apply(is_missing_email)
+            df["Invalid_Email"] = df[email_col].apply(is_invalid_email)
 
 
     return df
@@ -444,7 +441,7 @@ def classify_severity(row):
         if col.startswith("Missing_") and row[col]:
             if "PAN" in col or "GST" in col:
                 return "High"
-            if "CONTACTS" in col:
+            if "Contact" in col:
                 return "High"
             if "Email" in col:
                 return "Medium"
@@ -547,6 +544,7 @@ if uploaded_file:
         st.session_state.audit_df = audit_df
         st.session_state.exception_cols = [
             c for c in audit_df.columns if audit_df[c].dtype == bool
+            if c.startswith(("Missing_", "Invalid_", "Duplicate_"))
         ]
 
     # --------------------------------------------------------
