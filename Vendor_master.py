@@ -501,19 +501,27 @@ def risk_level(score):
 # ------------------------------------------------------------
 # FILE UPLOAD
 # ------------------------------------------------------------
-uploaded_file = st.file_uploader("📤 Upload Vendor Master Excel", type=["xlsx", "xls","csv"])
+uploaded_file = st.file_uploader(
+    "📤 Upload Vendor Master Excel",
+    type=["xlsx", "xls", "csv"]
+)
 
 if uploaded_file:
 
+    # 🔐 SAVE FILE BYTES (CRITICAL FOR STREAMLIT CLOUD)
+    st.session_state["file_bytes"] = uploaded_file.getvalue()
+    st.session_state["file_name"] = uploaded_file.name
+
     # ---------- HANDLE CSV ----------
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
+    if uploaded_file.name.lower().endswith(".csv"):
+
+        df = pd.read_csv(BytesIO(st.session_state["file_bytes"]))
         st.session_state.raw_df = df
         st.success("CSV file uploaded successfully")
 
     # ---------- HANDLE EXCEL ----------
     else:
-        excel_file = pd.ExcelFile(uploaded_file)
+        excel_file = pd.ExcelFile(BytesIO(st.session_state["file_bytes"]))
         sheet_names = excel_file.sheet_names
 
         selected_sheet = st.selectbox(
@@ -521,16 +529,21 @@ if uploaded_file:
             sheet_names
         )
 
-        df = excel_file.parse(selected_sheet)
+        df = pd.read_excel(
+            BytesIO(st.session_state["file_bytes"]),
+            sheet_name=selected_sheet
+        )
+
         st.session_state.raw_df = df
         st.success(f"Sheet '{selected_sheet}' loaded successfully")
 
+    # ---------- PREVIEW ----------
     st.dataframe(st.session_state.raw_df.head())
 
-    # 🔑 IMPORTANT: define columns ONCE
+    # 🔑 DEFINE COLUMNS ONCE
     df = st.session_state.raw_df
     columns = df.columns.tolist()
-
+    
     # --------------------------------------------------------
     # DYNAMIC COLUMN MAPPING
     # --------------------------------------------------------
