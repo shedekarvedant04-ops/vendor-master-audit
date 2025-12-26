@@ -27,6 +27,9 @@ from itertools import permutations
 if "page" not in st.session_state:
     st.session_state.page = "main"
 st.set_page_config(page_title="Dynamic Vendor Master Audit", layout="wide")
+
+if "show_exception_selector" not in st.session_state:
+    st.session_state.show_exception_selector = False
 # ------------------------------------------------------------
 # SOFT PASTEL CSS + CENTERING
 # ------------------------------------------------------------
@@ -372,6 +375,11 @@ def validate_gst(gst):
 def normalize_labels(field_map):
     """Normalize mapping labels"""
     return {k.strip().lower(): v for k, v in field_map.items()}
+
+def sanitize_sheet_name(name):
+    name = name.replace("--", "").replace(" ", "_")
+    return name[:500]  # Excel sheet name limit
+
 # ------------------------------------------------------------
 # EXCEPTION REQUEST REGISTRY (DEVELOPER BACKLOG)
 # ------------------------------------------------------------
@@ -600,7 +608,7 @@ if uploaded_file:
         # ----------------------------------------------------
         # DOWNLOAD EXCEPTION OUTPUT DATASET
         # ----------------------------------------------------
-        st.subheader("⬇️ Download Exception Report")
+        st.subheader("⬇️ Download Selected Exception Report")
 
         download_buffer = BytesIO()
 
@@ -617,6 +625,158 @@ if uploaded_file:
             file_name=f"Exception_Report_{selected_exception.replace(' ', '_')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+        st.subheader("📦 Bulk Exception Download")
+
+        if st.button("📥 Download Selected Exception Workbook"):
+            st.session_state.show_exception_selector = True
+
+        # ----------------------------------------------------
+        # EXCEPTION CHECKLIST (ON-DEMAND)
+        # ----------------------------------------------------
+        if st.session_state.show_exception_selector:
+
+            st.markdown("### ☑️ Select Exceptions to Include")
+
+            valid_exception_map = {
+                exc: audit_df[audit_df[exc]]
+                for exc in exception_cols
+                if audit_df[exc].any()
+            }
+
+            if not valid_exception_map:
+                st.warning("No exceptions with data available for download.")
+                st.session_state.show_exception_selector = False
+                st.stop()
+
+            # Init selection state
+            if "selected_exceptions" not in st.session_state:
+                st.session_state.selected_exceptions = list(valid_exception_map.keys())
+
+            # ---- SELECT ALL / DESELECT ALL ----
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("✅ Select All", key="select_all_btn"):
+                    for exc in valid_exception_map.keys():
+                        st.session_state[f"chk_{exc}"] = True
+
+            with col2:
+                if st.button("❌ Deselect All", key="deselect_all_btn"):
+                    for exc in valid_exception_map.keys():
+                        st.session_state[f"chk_{exc}"] = False
+
+            include_all = st.checkbox(
+                "Include All Exceptions (Combined)",
+                value=True,
+                key="include_all_exc"
+            )
+
+            st.markdown("---")
+
+            # Individual checkboxes
+            selected = []
+
+            for exc in valid_exception_map.keys():
+                if st.checkbox(
+                    exc,
+                    key=f"chk_{exc}",
+                    value=st.session_state.get(f"chk_{exc}", True)
+                ):
+                    selected.append(exc)
+
+            st.session_state.selected_exceptions = selected
+
+            st.markdown("### ⬇️ Generate Workbook")
+
+            if st.button("📂 Generate in Single Workbook", key="gen_excel"):
+
+                if not selected and not include_all:
+                    st.warning("Please select at least one exception.")
+                    st.stop()
+
+                buffer = BytesIO()
+
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+
+                    if include_all:
+                        all_df = audit_df[audit_df[list(valid_exception_map.keys())].any(axis=1)]
+                        if not all_df.empty:
+                            all_df.to_excel(writer, index=False, sheet_name="All_Exceptions")
+
+                    for exc in selected:
+                        df_exc = valid_exception_map.get(exc)
+                        if df_exc is not None and not df_exc.empty:
+                            df_exc.to_excel(writer, index=False, sheet_name=exc[:31])
+                
+                file_base = uploaded_file.name.rsplit(".", 1)[0]
+                
+                st.session_state.excel_file_bytes = buffer.getvalue()
+
+                st.download_button(
+                    "⬇️ Download Excel File",
+                    data=st.session_state.excel_file_bytes,
+                    file_name=f"All_Exceptions_{file_base}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+                st.session_state.download_completed = True
+                
+            if st.button("📂 Generate in Multiple Workbooks", key="gen_multi_excel"):
+
+                if not selected:
+                    st.warning("Please select at least one exception.")
+                    st.stop()
+
+                from zipfile import ZipFile
+                zip_buffer = BytesIO()
+
+                file_base = uploaded_file.name.rsplit(".", 1)[0]
+
+                with ZipFile(zip_buffer, "w") as zip_file:
+
+                    for exc in selected:
+                        df_exc = valid_exception_map.get(exc)
+
+                        if df_exc is None or df_exc.empty:
+                            continue
+
+                        excel_buffer = BytesIO()
+
+                        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                            df_exc.to_excel(
+                                writer,
+                                index=False,
+                                sheet_name=exc[:31]
+                            )
+
+                        zip_file.writestr(
+                            f"{exc}_{file_base}.xlsx",
+                            excel_buffer.getvalue()
+                        )
+
+                st.download_button(
+                    label="⬇️ Download Multiple Workbooks (ZIP)",
+                    data=zip_buffer.getvalue(),
+                    file_name=f"Selected_Exceptions_{file_base}.zip",
+                    mime="application/zip"
+                )
+                
+                st.session_state.download_completed = True
+
+            if st.button("❌ Cancel Download", key="cancel_bulk_download"):
+
+                st.session_state.show_exception_selector = False
+                st.session_state.selected_exceptions = []
+                st.session_state.download_completed = False
+
+                for exc in valid_exception_map.keys():
+                    st.session_state.pop(f"chk_{exc}", None)
+
+                st.session_state.pop("excel_ready", None)
+                st.session_state.pop("excel_file_bytes", None)
+
+                st.rerun()
+
 
         # Stop dashboard if no records
         if dashboard_df.empty:
