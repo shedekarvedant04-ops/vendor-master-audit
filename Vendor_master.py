@@ -467,7 +467,7 @@ def classify_severity(row):
         if col.startswith("Duplicate_") and row[col]:
             return "High"
         if col.startswith("Missing_") and row[col]:
-            if "pan" in col.lower() or "gst" in col.lower:
+            if "pan" in col.lower() or "gst" in col.lower():
                 return "High"
             if "contact" in col.lower():
                 return "High"
@@ -475,7 +475,7 @@ def classify_severity(row):
                 return "Medium"
             return "Medium"
         if col.startswith("Invalid_") and row[col]:
-            if "pan" in col.lower() or "gst" in col.lower:
+            if "pan" in col.lower() or "gst" in col.lower():
                 return "Medium"
             if "contact" in col.lower():
                 return "Medium"
