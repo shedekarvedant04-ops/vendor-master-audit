@@ -244,7 +244,6 @@ def similarity(a, b):
     b = "" if pd.isna(b) else str(b)
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-
 def log_exception_request(user_text, threshold=0.70):
     """
     Stores new exception request.
@@ -290,11 +289,8 @@ def generate_cross_exceptions(df, field_map):
         base_col = norm[base]
         compare_col = norm[compare]
 
+        # Safety checks
         if base_col not in df.columns or compare_col not in df.columns:
-            continue
-
-        # 🚀 SKIP HIGH CARDINALITY
-        if df[base_col].nunique() > len(df) * 0.7:
             continue
 
         col_name = f"Same_{base.upper()}_Different_{compare.upper()}"
@@ -303,6 +299,8 @@ def generate_cross_exceptions(df, field_map):
             df.groupby(base_col)[compare_col]
               .transform("nunique")
               .gt(1)
+            & df[base_col].notna()
+            & (df[base_col].astype(str).str.strip() != "")
         )
 
     return df
@@ -401,12 +399,6 @@ def sanitize_sheet_name(name):
 # ------------------------------------------------------------
 # CORE AUDIT RULE ENGINE
 # ------------------------------------------------------------
-@st.cache_data(show_spinner="Running audit rules...")
-def run_full_audit(df, field_map):
-    audit_df = apply_rules(df.copy(), field_map)
-    audit_df = assign_severity_vectorized(audit_df)
-    return audit_df
-
 def apply_rules(df, field_map):
     norm = normalize_labels(field_map)
 
@@ -452,7 +444,6 @@ def apply_rules(df, field_map):
         df["Missing_Contact"] = df[norm["contact"]].apply(is_missing_contact)
         df["Invalid_Contact"] = df[norm["contact"]].apply(is_invalid_contact)
 
-
     if "email" in norm:
         df["Invalid_Email"] = df[norm["email"]].apply(is_invalid_email)
         df["Missing_Email"] = df[norm["email"]].apply(is_missing_email)
@@ -464,42 +455,33 @@ def apply_rules(df, field_map):
 # ------------------------------------------------------------
 # LEVEL 1 – SEVERITY & RISK SCORING
 # ------------------------------------------------------------
-def assign_severity_vectorized(df):
-    df["Severity"] = "No Issue"
+def classify_severity(row):
+    if row.get("Invalid_PAN") or row.get("Invalid_GST"):
+        return "Critical"
+    if row.get("GST_PAN_Mismatch"):
+        return "Critical"
+    
+    for col in row.index:
+        if col.startswith("Duplicate_") and row[col]:
+            return "High"
+        if col.startswith("Missing_") and row[col]:
+            if "pan" in col.lower() or "gst" in col.lower():
+                return "High"
+            if "contact" in col.lower():
+                return "High"
+            if "email" in col.lower():
+                return "Medium"
+            return "Medium"
+        if col.startswith("Invalid_") and row[col]:
+            if "pan" in col.lower() or "gst" in col.lower():
+                return "Medium"
+            if "contact" in col.lower():
+                return "Medium"
+            if "email" in col.lower():
+                return "Low"
+            return "Medium"
 
-    # ---- CRITICAL ----
-    critical_mask = (
-        df.get("Invalid_PAN", False)
-        | df.get("Invalid_GST", False)
-        | df.get("GST_PAN_Mismatch", False)
-    )
-    df.loc[critical_mask, "Severity"] = "Critical"
-
-    # ---- HIGH ----
-    dup_cols = [c for c in df.columns if c.startswith("Duplicate_")]
-    miss_cols = [c for c in df.columns if c.startswith("Missing_")]
-
-    high_mask = df[dup_cols].any(axis=1)
-    df.loc[high_mask & (df["Severity"] == "No Issue"), "Severity"] = "High"
-
-    # ---- MEDIUM ----
-    medium_mask = df[miss_cols].any(axis=1)
-    df.loc[medium_mask & (df["Severity"] == "No Issue"), "Severity"] = "Medium"
-
-    # ---- RISK SCORE & LEVEL ----
-    df["Risk_Score"] = df["Severity"].map({
-        "Critical": 30,
-        "High": 20,
-        "Medium": 10
-    }).fillna(0)
-
-    df["Risk_Level"] = pd.cut(
-        df["Risk_Score"],
-        bins=[-1, 0, 29, 59, 999],
-        labels=["No Risk", "Low Risk", "Medium Risk", "High Risk"]
-    )
-
-    return df
+    return "No Issue"
 
 def risk_score(severity):
     return {"Critical": 30, "High": 20, "Medium": 10}.get(severity, 0)
@@ -557,8 +539,6 @@ if uploaded_file:
 
     # 🔑 DEFINE COLUMNS ONCE
     df = st.session_state.raw_df
-    for col in df.select_dtypes(include="object").columns:
-        df[col] = df[col].astype(str).str.strip()
     columns = df.columns.tolist()
 
     # --------------------------------------------------------
@@ -616,8 +596,10 @@ if uploaded_file:
             if m["label"] and m["column"]
         }
 
-        audit_df = run_full_audit(df, field_map)
-
+        audit_df = apply_rules(df.copy(), field_map)
+        audit_df["Severity"] = audit_df.apply(classify_severity, axis=1)
+        audit_df["Risk_Score"] = audit_df["Severity"].apply(risk_score)
+        audit_df["Risk_Level"] = audit_df["Risk_Score"].apply(risk_level)
 
         st.session_state.audit_df = audit_df
         st.session_state.exception_cols = [
@@ -653,8 +635,7 @@ if uploaded_file:
             dashboard_df = audit_df[audit_df[selected_exception]]
 
         st.subheader("🚨 Exception Output Dataset")
-        st.dataframe(dashboard_df.head(1000))
-        st.caption(f"Showing first 1000 of {len(dashboard_df)} records")
+        st.dataframe(dashboard_df)
         # ----------------------------------------------------
         # DOWNLOAD EXCEPTION OUTPUT DATASET
         # ----------------------------------------------------
@@ -827,7 +808,6 @@ if uploaded_file:
 
                 st.rerun()
 
-
         # Stop dashboard if no records
         if dashboard_df.empty:
             st.warning("No records found for the selected exception.")
@@ -969,3 +949,4 @@ if st.session_state.page == "requests":
         st.session_state.page = "main"
 
     st.stop()
+    
