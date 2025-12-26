@@ -201,24 +201,34 @@ st.markdown(
 # ------------------------------------------------------------
 REQUEST_DB = "exception_requests.csv"
 
-if not os.path.exists(REQUEST_DB):
-    pd.DataFrame(
-        columns=[
-            "exception_key",
-            "exception_text",
-            "count",
-            "status",
-            "last_updated"
-        ]
-    ).to_csv(REQUEST_DB, index=False)
-req_df = pd.read_csv(REQUEST_DB)
+# ---------------- INITIALIZE REQUEST DB SAFELY ----------------
+if "req_df" not in st.session_state:
 
-req_df = req_df[req_df["exception_text"].notna()]  # drop NaN
-req_df = req_df[req_df["exception_text"].str.strip() != ""]  # drop empty strings
+    if os.path.exists(REQUEST_DB):
+        req_df = pd.read_csv(REQUEST_DB)
+    else:
+        req_df = pd.DataFrame(
+            columns=[
+                "exception_key",
+                "exception_text",
+                "count",
+                "status",
+                "last_updated"
+            ]
+        )
+        req_df.to_csv(REQUEST_DB, index=False)
 
-req_df.to_csv(REQUEST_DB, index=False)
+    # Clean bad rows ONCE
+    req_df = req_df[req_df["exception_text"].notna()]
+    req_df = req_df[req_df["exception_text"].str.strip() != ""]
+
+    st.session_state.req_df = req_df
+
+# ---------------- ALWAYS READ FROM SESSION ----------------
+req_df = st.session_state.req_df
 
 pending_count = req_df[req_df["status"] == "PENDING"].shape[0]
+
 # ------------------------------------------------------------
 # REQUEST BUTTON (TOP RIGHT)
 # ------------------------------------------------------------
@@ -240,44 +250,32 @@ def log_exception_request(user_text, threshold=0.70):
     Stores new exception request.
     If similar request exists → increments count.
     """
-    req_df = pd.read_csv(REQUEST_DB)
+    req_df = st.session_state.req_df.copy()
 
-    if req_df.empty:
-        new_row = {
-            "exception_key": user_text.replace(" ", "_").lower(),
-            "exception_text": user_text,
-            "count": 1,
-            "status": "PENDING",
-            "last_updated": datetime.now()
-        }
-        req_df = pd.DataFrame([new_row])
-    else:
-        matched = False
+    matched = False
 
-        for idx, row in req_df.iterrows():
-            score = similarity(str(user_text), str(row["exception_text"]))
+    for idx, row in req_df.iterrows():
+        score = similarity(user_text, row["exception_text"])
 
-            if score >= threshold and row["status"] == "PENDING":
-                req_df.loc[idx, "count"] += 1
-                req_df.loc[idx, "last_updated"] = datetime.now()
-                matched = True
-                break
+        if score >= threshold and row["status"] == "PENDING":
+            req_df.loc[idx, "count"] += 1
+            req_df.loc[idx, "last_updated"] = datetime.now()
+            matched = True
+            break
 
-        if not matched:
-            req_df = pd.concat(
-                [
-                    req_df,
-                    pd.DataFrame([{
-                        "exception_key": user_text.replace(" ", "_").lower(),
-                        "exception_text": user_text,
-                        "count": 1,
-                        "status": "PENDING",
-                        "last_updated": datetime.now()
-                    }])
-                ],
-                ignore_index=True
-            )
+    if not matched:
+        req_df = pd.concat(
+            [req_df, pd.DataFrame([{
+                "exception_key": user_text.replace(" ", "_").lower(),
+                "exception_text": user_text,
+                "count": 1,
+                "status": "PENDING",
+                "last_updated": datetime.now()
+            }])],
+            ignore_index=True
+        )
 
+    st.session_state.req_df = req_df
     req_df.to_csv(REQUEST_DB, index=False)
 
 def generate_cross_exceptions(df, field_map):
@@ -378,7 +376,7 @@ def normalize_labels(field_map):
 
 def sanitize_sheet_name(name):
     name = name.replace("--", "").replace(" ", "_")
-    return name[:500]  # Excel sheet name limit
+    return name[:31]  # Excel sheet name limit
 
 # ------------------------------------------------------------
 # EXCEPTION REQUEST REGISTRY (DEVELOPER BACKLOG)
@@ -417,7 +415,7 @@ def apply_rules(df, field_map):
         df[f"Duplicate_{label}"] = (
             df[col].notna()
             & (df[col].astype(str).str.strip() != "")
-            & df[col].duplicated(keep=False)
+            & df[col].duplicated(keep=False) & df[col].notna()
         )
 
     # PAN validation
@@ -431,23 +429,26 @@ def apply_rules(df, field_map):
     # PAN–GST mismatch
     if "pan" in norm and "gst" in norm:
         df["GST_PAN_Mismatch"] = (
-            df[norm["pan"]].astype(str).str.upper().str.strip()
-            != df[norm["gst"]].apply(extract_pan_from_gst)
-        ) & df[norm["pan"]].notna() & df[norm["gst"]].notna()
-
-    
+            df[norm["gst"]].apply(extract_pan_from_gst).notna()
+            & df[norm["pan"]].notna()
+            & (
+                df[norm["pan"]].astype(str).str.upper().str.strip()
+                != df[norm["gst"]].apply(extract_pan_from_gst)
+            )
+        )
     # -------- BEHAVIORAL / RISK --------
     if "status" in norm:
         df["Inactive_But_Configured"] = (
-            df[norm["Status"]].astype(str).str.lower().str.contains("inactive")
+            df[norm["status"]].astype(str).str.lower().str.contains("inactive")
         )
     if "contact" in norm:
-        df["Missing_Contact"] = df["contact"].apply(is_missing_contact)
-        df["Invalid_Contact"] = df["contact"].apply(is_invalid_contact)
+        df["Missing_Contact"] = df[norm["contact"]].apply(is_missing_contact)
+        df["Invalid_Contact"] = df[norm["contact"]].apply(is_invalid_contact)
+
 
     if "email" in norm:
-        df["Invalid_Email"] = df["email"].apply(is_invalid_email)
-        df["Missing_Email"] = df["email"].apply(is_missing_email)
+        df["Invalid_Email"] = df[norm["email"]].apply(is_invalid_email)
+        df["Missing_Email"] = df[norm["email"]].apply(is_missing_email)
 
     df = generate_cross_exceptions(df, field_map)
     return df
@@ -461,26 +462,24 @@ def classify_severity(row):
         return "Critical"
     if row.get("GST_PAN_Mismatch"):
         return "Critical"
-    if row.get("Same_PAN_Multiple_IDs") or row.get("Same_GST_Multiple_IDs"):
-        return "Critical"
-
+    
     for col in row.index:
         if col.startswith("Duplicate_") and row[col]:
             return "High"
         if col.startswith("Missing_") and row[col]:
-            if "PAN" in col or "GST" in col:
+            if "pan" in col.lower() or "gst" in col.lower:
                 return "High"
-            if "Contact" in col:
+            if "contact" in col.lower():
                 return "High"
-            if "Email" in col:
+            if "email" in col.lower():
                 return "Medium"
             return "Medium"
         if col.startswith("Invalid_") and row[col]:
-            if "PAN" in col or "GST" in col:
+            if "pan" in col.lower() or "gst" in col.lower:
                 return "Medium"
-            if "Contact" in col:
+            if "contact" in col.lower():
                 return "Medium"
-            if "Email" in col:
+            if "email" in col.lower():
                 return "Low"
             return "Medium"
 
@@ -543,7 +542,7 @@ if uploaded_file:
     # 🔑 DEFINE COLUMNS ONCE
     df = st.session_state.raw_df
     columns = df.columns.tolist()
-    
+
     # --------------------------------------------------------
     # DYNAMIC COLUMN MAPPING
     # --------------------------------------------------------
@@ -860,7 +859,11 @@ if uploaded_file:
         
         # DEEP RISK SCORING
         st.subheader("⚠️ Deep Risk Scoring")
-        dashboard_df["Composite_Risk"] = dashboard_df[exception_cols].sum(axis=1) * dashboard_df["Risk_Score"]
+        dashboard_df["Composite_Risk"] = (
+            dashboard_df[exception_cols].sum(axis=1)
+            .clip(upper=10)
+            * dashboard_df["Risk_Score"]
+        )
         st.dataframe(dashboard_df[["Composite_Risk"]].describe())
 
         # Exception analytics
