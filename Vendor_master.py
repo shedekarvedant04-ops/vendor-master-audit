@@ -501,13 +501,34 @@ def risk_level(score):
 # ------------------------------------------------------------
 # FILE UPLOAD
 # ------------------------------------------------------------
-uploaded_file = st.file_uploader("📤 Upload Vendor Master Excel", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("📤 Upload Vendor Master Excel", type=["xlsx", "xls","csv"])
 
 if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    st.success("File uploaded successfully")
-    st.dataframe(df.head())
 
+    # ---------- HANDLE CSV ----------
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        st.session_state.raw_df = df
+        st.success("CSV file uploaded successfully")
+
+    # ---------- HANDLE EXCEL ----------
+    else:
+        excel_file = pd.ExcelFile(uploaded_file)
+        sheet_names = excel_file.sheet_names
+
+        selected_sheet = st.selectbox(
+            "📄 Select Sheet to Audit",
+            sheet_names
+        )
+
+        df = excel_file.parse(selected_sheet)
+        st.session_state.raw_df = df
+        st.success(f"Sheet '{selected_sheet}' loaded successfully")
+
+    st.dataframe(st.session_state.raw_df.head())
+
+    # 🔑 IMPORTANT: define columns ONCE
+    df = st.session_state.raw_df
     columns = df.columns.tolist()
 
     # --------------------------------------------------------
